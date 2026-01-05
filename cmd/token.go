@@ -3,7 +3,8 @@ package cmd
 import (
 	"context"
 	"fmt"
-	"github.com/loft-sh/devpod-provider-gcloud/pkg/gcloud"
+
+	"github.com/skevetter/devpod-provider-gcloud/pkg/gcloud"
 	"github.com/spf13/cobra"
 )
 

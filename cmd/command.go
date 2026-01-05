@@ -9,11 +9,11 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/loft-sh/devpod-provider-gcloud/pkg/gcloud"
-	"github.com/loft-sh/devpod-provider-gcloud/pkg/options"
-	"github.com/loft-sh/devpod/pkg/log"
-	"github.com/loft-sh/devpod/pkg/ssh"
 	"github.com/pkg/errors"
+	"github.com/skevetter/devpod-provider-gcloud/pkg/gcloud"
+	"github.com/skevetter/devpod-provider-gcloud/pkg/options"
+	"github.com/skevetter/log"
+	"github.com/skevetter/devpod/pkg/ssh"
 	"github.com/spf13/cobra"
 )
 
@@ -115,7 +115,7 @@ func (cmd *CommandCmd) Run(ctx context.Context, options *options.Options, log lo
 	defer sshClient.Close()
 
 	// run command
-	return ssh.Run(ctx, sshClient, command, os.Stdin, os.Stdout, os.Stderr)
+	return ssh.Run(ctx, sshClient, command, os.Stdin, os.Stdout, os.Stderr, nil)
 }
 
 func findAvailablePort() (string, error) {

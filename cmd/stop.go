@@ -8,10 +8,10 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/loft-sh/devpod-provider-gcloud/pkg/gcloud"
-	"github.com/loft-sh/devpod-provider-gcloud/pkg/options"
-	"github.com/loft-sh/devpod/pkg/log"
 	"github.com/pkg/errors"
+	"github.com/skevetter/devpod-provider-gcloud/pkg/gcloud"
+	"github.com/skevetter/devpod-provider-gcloud/pkg/options"
+	"github.com/skevetter/log"
 	"github.com/spf13/cobra"
 )
 
