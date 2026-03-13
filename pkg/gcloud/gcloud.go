@@ -3,9 +3,9 @@ package gcloud
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
-	"path"
 	"path/filepath"
 	"strings"
 
@@ -20,7 +20,18 @@ import (
 	"google.golang.org/api/option"
 )
 
-func NewClient(ctx context.Context, project, zone string, opts ...option.ClientOption) (*Client, error) {
+type Client struct {
+	InstanceClient *compute.InstancesClient
+
+	Project string
+	Zone    string
+}
+
+func NewClient(
+	ctx context.Context,
+	project, zone string,
+	opts ...option.ClientOption,
+) (*Client, error) {
 	err := SetupEnvJson(ctx)
 	if err != nil {
 		return nil, err
@@ -38,45 +49,35 @@ func NewClient(ctx context.Context, project, zone string, opts ...option.ClientO
 	}, nil
 }
 
-type Client struct {
-	InstanceClient *compute.InstancesClient
-
-	Project string
-	Zone    string
-}
-
 func SetupEnvJson(ctx context.Context) error {
 	gcloudKeyFile := os.Getenv("DEVPOD_PROVIDER_GCLOUD_KEY_FILE")
 	if gcloudKeyFile != "" {
 		return os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", gcloudKeyFile)
-	} else {
-		gcloudKey := os.Getenv("DEVPOD_PROVIDER_GCLOUD_KEY")
-		if gcloudKey == "" {
-			gcloudKey = os.Getenv("GCLOUD_JSON_AUTH")
-		}
-		if gcloudKey != "" {
-			exePath, err := os.Executable()
-			if err != nil {
-				return err
-			}
-			destination := filepath.Join(path.Dir(exePath), "gcloud_auth.json")
-
-			f, err := os.OpenFile(destination, os.O_RDWR|os.O_CREATE|os.O_TRUNC, 0o600)
-			if err != nil {
-				return err
-			}
-			defer func() { _ = f.Close() }()
-
-			_, err = f.WriteString(gcloudKey)
-			if err != nil {
-				return err
-			}
-
-			return os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", destination)
-		}
 	}
 
-	return nil
+	gcloudKey := os.Getenv("DEVPOD_PROVIDER_GCLOUD_KEY")
+	if gcloudKey == "" {
+		gcloudKey = os.Getenv("GCLOUD_JSON_AUTH")
+	}
+	if gcloudKey == "" {
+		return nil
+	}
+
+	return writeKeyFile(gcloudKey)
+}
+
+func writeKeyFile(gcloudKey string) error {
+	exePath, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	destination := filepath.Join(filepath.Dir(exePath), "gcloud_auth.json")
+
+	if err := os.WriteFile(destination, []byte(gcloudKey), 0o600); err != nil { // #nosec G703
+		return err
+	}
+
+	return os.Setenv("GOOGLE_APPLICATION_CREDENTIALS", destination)
 }
 
 func DefaultTokenSource(ctx context.Context) (oauth2.TokenSource, error) {
@@ -115,7 +116,7 @@ func GetToken(ctx context.Context) ([]byte, error) {
 
 	t.RefreshToken = ""
 	t.TokenType = ""
-	return json.Marshal(t)
+	return json.Marshal(t) //nolint:gosec // AccessToken is intentionally marshaled for provider use
 }
 
 func (c *Client) Init(ctx context.Context) error {
@@ -123,7 +124,7 @@ func (c *Client) Init(ctx context.Context) error {
 		Project: c.Project,
 		Zone:    c.Zone,
 	}).Next()
-	if err != nil && err != iterator.Done {
+	if err != nil && !errors.Is(err, iterator.Done) {
 		return fmt.Errorf("cannot list instances: %v", err)
 	}
 
@@ -191,11 +192,10 @@ func (c *Client) Get(ctx context.Context, name string) (*computepb.Instance, err
 		Zone:     c.Zone,
 	})
 	if err != nil {
-		// check if api error
-		apiError, ok := err.(*apierror.APIError)
-		if ok {
-			googleAPIError, ok := apiError.Unwrap().(*googleapi.Error)
-			if ok && googleAPIError.Code == 404 {
+		var apiErr *apierror.APIError
+		if errors.As(err, &apiErr) {
+			var googleErr *googleapi.Error
+			if errors.As(apiErr.Unwrap(), &googleErr) && googleErr.Code == 404 {
 				return nil, nil
 			}
 		}

@@ -9,7 +9,6 @@ import (
 	"strings"
 
 	"cloud.google.com/go/compute/apiv1/computepb"
-	"github.com/pkg/errors"
 	"github.com/skevetter/devpod-provider-gcloud/pkg/gcloud"
 	"github.com/skevetter/devpod-provider-gcloud/pkg/options"
 	"github.com/skevetter/devpod-provider-gcloud/pkg/ptr"
@@ -17,10 +16,10 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// CreateCmd holds the cmd flags
+// CreateCmd holds the cmd flags.
 type CreateCmd struct{}
 
-// NewCreateCmd defines a command
+// NewCreateCmd defines a command.
 func NewCreateCmd() *cobra.Command {
 	cmd := &CreateCmd{}
 	return &cobra.Command{
@@ -37,7 +36,7 @@ func NewCreateCmd() *cobra.Command {
 	}
 }
 
-// Run runs the command logic
+// Run runs the command logic.
 func (cmd *CreateCmd) Run(ctx context.Context, options *options.Options) error {
 	client, err := gcloud.NewClient(ctx, options.Project, options.Zone)
 	if err != nil {
@@ -56,72 +55,111 @@ func (cmd *CreateCmd) Run(ctx context.Context, options *options.Options) error {
 func buildInstance(options *options.Options) (*computepb.Instance, error) {
 	diskSize, err := strconv.Atoi(options.DiskSize)
 	if err != nil {
-		return nil, errors.Wrap(err, "parse disk size")
+		return nil, fmt.Errorf("parse disk size: %w", err)
+	}
+	if diskSize <= 0 {
+		return nil, fmt.Errorf("invalid disk size: must be > 0, got %d", diskSize)
 	}
 
-	// generate ssh keys
-	publicKeyBase, err := ssh.GetPublicKeyBase(options.MachineFolder)
-	if err != nil {
-		return nil, errors.Wrap(err, "generate public key")
-	}
-
-	publicKey, err := base64.StdEncoding.DecodeString(publicKeyBase)
+	publicKey, err := loadPublicKey(options.MachineFolder)
 	if err != nil {
 		return nil, err
 	}
-	serviceAccounts := []*computepb.ServiceAccount{}
-	if options.ServiceAccount != "" {
-		serviceAccounts = []*computepb.ServiceAccount{
-			{
-				Email: &options.ServiceAccount,
-				Scopes: []string{
-					"https://www.googleapis.com/auth/cloud-platform",
-				},
-			},
-		}
-	}
 
-	// generate instance object
 	instance := &computepb.Instance{
-		Scheduling: &computepb.Scheduling{
-			AutomaticRestart:  ptr.Ptr(true),
-			OnHostMaintenance: ptr.Ptr(getMaintenancePolicy(options.MachineType)),
-		},
-		Metadata: &computepb.Metadata{
-			Items: []*computepb.Items{
-				{
-					Key:   ptr.Ptr("ssh-keys"),
-					Value: ptr.Ptr("devpod:" + string(publicKey)),
-				},
-			},
-		},
-		MachineType: ptr.Ptr(fmt.Sprintf("projects/%s/zones/%s/machineTypes/%s", options.Project, options.Zone, options.MachineType)),
-		Disks: []*computepb.AttachedDisk{
-			{
-				AutoDelete: ptr.Ptr(true),
-				Boot:       ptr.Ptr(true),
-				DeviceName: ptr.Ptr(options.MachineID),
-				InitializeParams: &computepb.AttachedDiskInitializeParams{
-					DiskSizeGb:  ptr.Ptr(int64(diskSize)),
-					DiskType:    ptr.Ptr(fmt.Sprintf("projects/%s/zones/%s/diskTypes/pd-balanced", options.Project, options.Zone)),
-					SourceImage: ptr.Ptr(options.DiskImage),
-				},
-			},
-		},
-		Tags: buildInstanceTags(options),
-		NetworkInterfaces: []*computepb.NetworkInterface{
-			{
-				Network:       normalizeNetworkID(options),
-				Subnetwork:    normalizeSubnetworkID(options),
-				AccessConfigs: getAccessConfig(options),
-			},
-		},
-		Zone:            ptr.Ptr(fmt.Sprintf("projects/%s/zones/%s", options.Project, options.Zone)),
-		Name:            ptr.Ptr(options.MachineID),
-		ServiceAccounts: serviceAccounts,
+		Scheduling:        buildScheduling(options.MachineType),
+		Metadata:          buildMetadata(publicKey),
+		MachineType:       ptr.Ptr(machineTypeURI(options)),
+		Disks:             buildDisks(options, int64(diskSize)),
+		Tags:              buildInstanceTags(options),
+		NetworkInterfaces: buildNetworkInterfaces(options),
+		Name:              ptr.Ptr(options.MachineID),
+		ServiceAccounts:   buildServiceAccounts(options),
 	}
 
 	return instance, nil
+}
+
+func loadPublicKey(machineFolder string) (string, error) {
+	publicKeyBase, err := ssh.GetPublicKeyBase(machineFolder)
+	if err != nil {
+		return "", fmt.Errorf("generate public key: %w", err)
+	}
+
+	decoded, err := base64.StdEncoding.DecodeString(publicKeyBase)
+	if err != nil {
+		return "", err
+	}
+
+	return string(decoded), nil
+}
+
+func buildScheduling(machineType string) *computepb.Scheduling {
+	return &computepb.Scheduling{
+		AutomaticRestart:  ptr.Ptr(true),
+		OnHostMaintenance: ptr.Ptr(getMaintenancePolicy(machineType)),
+	}
+}
+
+func buildMetadata(publicKey string) *computepb.Metadata {
+	return &computepb.Metadata{
+		Items: []*computepb.Items{
+			{
+				Key:   ptr.Ptr("ssh-keys"),
+				Value: ptr.Ptr("devpod:" + publicKey),
+			},
+		},
+	}
+}
+
+func machineTypeURI(options *options.Options) string {
+	return fmt.Sprintf(
+		"projects/%s/zones/%s/machineTypes/%s",
+		options.Project, options.Zone, options.MachineType,
+	)
+}
+
+func buildDisks(options *options.Options, diskSize int64) []*computepb.AttachedDisk {
+	return []*computepb.AttachedDisk{
+		{
+			AutoDelete: ptr.Ptr(true),
+			Boot:       ptr.Ptr(true),
+			DeviceName: ptr.Ptr(options.MachineID),
+			InitializeParams: &computepb.AttachedDiskInitializeParams{
+				DiskSizeGb: ptr.Ptr(diskSize),
+				DiskType: ptr.Ptr(fmt.Sprintf(
+					"projects/%s/zones/%s/diskTypes/pd-balanced",
+					options.Project, options.Zone,
+				)),
+				SourceImage: ptr.Ptr(options.DiskImage),
+			},
+		},
+	}
+}
+
+func buildNetworkInterfaces(options *options.Options) []*computepb.NetworkInterface {
+	return []*computepb.NetworkInterface{
+		{
+			Network:       normalizeNetworkID(options),
+			Subnetwork:    normalizeSubnetworkID(options),
+			AccessConfigs: getAccessConfig(options),
+		},
+	}
+}
+
+func buildServiceAccounts(options *options.Options) []*computepb.ServiceAccount {
+	if options.ServiceAccount == "" {
+		return []*computepb.ServiceAccount{}
+	}
+
+	return []*computepb.ServiceAccount{
+		{
+			Email: &options.ServiceAccount,
+			Scopes: []string{
+				"https://www.googleapis.com/auth/cloud-platform",
+			},
+		},
+	}
 }
 
 func getAccessConfig(options *options.Options) []*computepb.AccessConfig {
@@ -147,60 +185,68 @@ func buildInstanceTags(options *options.Options) *computepb.Tags {
 
 func normalizeNetworkID(options *options.Options) *string {
 	network := options.Network
-	project := options.Project
-
-	if len(network) == 0 {
+	if network == "" {
 		return nil
 	}
 
-	// projects/{{project}}/regions/{{region}}/subnetworks/{{name}}
-	if regexp.MustCompile("projects/([^/]+)/global/networks/([^/]+)").MatchString(network) {
+	// Already a full or partial resource path — pass through.
+	if strings.HasPrefix(network, "projects/") ||
+		strings.HasPrefix(network, "/") ||
+		strings.HasPrefix(network, "global/") ||
+		strings.Contains(network, "/networks/") {
 		return ptr.Ptr(network)
 	}
 
-	// {{project}}/{{name}}
-	if regexp.MustCompile("([^/]+)/([^/]+)").MatchString(network) {
-		s := strings.Split(network, "/")
-		return ptr.Ptr(fmt.Sprintf("projects/%s/global/networks/%s", s[0], s[1]))
+	// {{project}}/{{name}} (exactly one slash, not starting with "/")
+	if strings.Count(network, "/") == 1 {
+		project, name, _ := strings.Cut(network, "/")
+		return ptr.Ptr(fmt.Sprintf("projects/%s/global/networks/%s", project, name))
 	}
 
 	// {{name}}
-	return ptr.Ptr(fmt.Sprintf("projects/%s/global/networks/%s", project, network))
+	return ptr.Ptr(fmt.Sprintf("projects/%s/global/networks/%s", options.Project, network))
 }
 
 func normalizeSubnetworkID(options *options.Options) *string {
 	sn := strings.TrimSpace(options.Subnetwork)
-
-	if len(sn) == 0 {
+	if sn == "" {
 		return nil
 	}
 
 	project := options.Project
 	zone := options.Zone
-	region := zone[:strings.LastIndex(zone, "-")]
+	idx := strings.LastIndex(zone, "-")
+	if idx <= 0 {
+		return nil
+	}
+	region := zone[:idx]
 
-	// projects/{{project}}/regions/{{region}}/subnetworks/{{name}}
-	if regexp.MustCompile("projects/([^/]+)/regions/([^/]+)/subnetworks/([^/]+)").MatchString(sn) {
+	parts := strings.Split(sn, "/")
+	switch len(parts) {
+	case 1:
+		// {{name}}
+		return ptr.Ptr(fmt.Sprintf("projects/%s/regions/%s/subnetworks/%s", project, region, sn))
+	case 2:
+		// {{region}}/{{name}}
+		return ptr.Ptr(
+			fmt.Sprintf("projects/%s/regions/%s/subnetworks/%s", project, parts[0], parts[1]),
+		)
+	case 3:
+		// {{project}}/{{region}}/{{name}}
+		return ptr.Ptr(
+			fmt.Sprintf("projects/%s/regions/%s/subnetworks/%s", parts[0], parts[1], parts[2]),
+		)
+	default:
+		// projects/{{project}}/regions/{{region}}/subnetworks/{{name}} or other full path
 		return ptr.Ptr(sn)
 	}
-
-	// {{project}}/{{region}}/{{name}}
-	if regexp.MustCompile("([^/]+)/([^/]+)/([^/]+)").MatchString(sn) {
-		s := strings.Split(sn, "/")
-		return ptr.Ptr(fmt.Sprintf("projects/%s/regions/%s/subnetworks/%s", s[0], s[1], s[2]))
-	}
-
-	// {{region}}/{{name}}
-	if regexp.MustCompile("([^/]+)/([^/]+)").MatchString(sn) {
-		s := strings.Split(sn, "/")
-		return ptr.Ptr(fmt.Sprintf("projects/%s/regions/%s/subnetworks/%s", project, s[0], s[1]))
-	}
-
-	// {{name}}
-	return ptr.Ptr(fmt.Sprintf("projects/%s/regions/%s/subnetworks/%s", project, region, sn))
 }
 
-var gpuInstancePattern *regexp.Regexp = regexp.MustCompile(`^[agn][0-9]`)
+// gpuInstancePattern matches accelerator/GPU machine type families (a2, a3, g2)
+// that require TERMINATE maintenance policy. General-purpose families (n1, n2, c2, etc.)
+// support live migration and use MIGRATE.
+// See https://cloud.google.com/compute/docs/instances/live-migration-process#limitations
+var gpuInstancePattern = regexp.MustCompile(`^[ag][0-9]`)
 
 func getMaintenancePolicy(machineType string) string {
 	if gpuInstancePattern.MatchString(machineType) {

@@ -2,24 +2,23 @@ package cmd
 
 import (
 	"context"
-	"crypto/tls"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"time"
 
-	"github.com/pkg/errors"
 	"github.com/skevetter/devpod-provider-gcloud/pkg/gcloud"
 	"github.com/skevetter/devpod-provider-gcloud/pkg/options"
 	"github.com/spf13/cobra"
 )
 
-// StopCmd holds the cmd flags
+// StopCmd holds the cmd flags.
 type StopCmd struct {
 	Raw bool
 }
 
-// NewStopCmd defines a command
+// NewStopCmd defines a command.
 func NewStopCmd() *cobra.Command {
 	cmd := &StopCmd{}
 	stopCmd := &cobra.Command{
@@ -35,11 +34,12 @@ func NewStopCmd() *cobra.Command {
 		},
 	}
 
-	stopCmd.Flags().BoolVar(&cmd.Raw, "raw", false, "If enabled will sent a raw request instead of using the SDK")
+	stopCmd.Flags().
+		BoolVar(&cmd.Raw, "raw", false, "If enabled, will send a raw request instead of using the SDK")
 	return stopCmd
 }
 
-// Run runs the command logic
+// Run runs the command logic.
 func (cmd *StopCmd) Run(ctx context.Context, options *options.Options) error {
 	if cmd.Raw {
 		return rawStop(ctx, options)
@@ -65,15 +65,23 @@ func rawStop(ctx context.Context, options *options.Options) error {
 		return err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "POST", fmt.Sprintf("https://compute.googleapis.com/compute/v1/projects/%s/zones/%s/instances/%s/stop", options.Project, options.Zone, options.MachineID), nil)
+	req, err := http.NewRequestWithContext(
+		ctx,
+		"POST",
+		fmt.Sprintf(
+			"https://compute.googleapis.com/compute/v1/projects/%s/zones/%s/instances/%s/stop",
+			options.Project,
+			options.Zone,
+			options.MachineID,
+		),
+		nil,
+	)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Authorization", "Bearer "+tok.AccessToken)
 
-	client := &http.Client{Transport: &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
-	}}
+	client := &http.Client{Timeout: 30 * time.Second}
 
 	resp, err := client.Do(req)
 	if err != nil {
@@ -82,11 +90,15 @@ func rawStop(ctx context.Context, options *options.Options) error {
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode >= 400 {
 		out, err := io.ReadAll(resp.Body)
-		if err == nil {
-			return errors.Wrapf(err, "Error stopping vm: %s", string(out))
+		if err != nil {
+			return fmt.Errorf(
+				"error stopping vm: status %d: failed to read body: %w",
+				resp.StatusCode,
+				err,
+			)
 		}
 
-		return err
+		return fmt.Errorf("error stopping vm: status %d: %s", resp.StatusCode, string(out))
 	}
 
 	return nil
